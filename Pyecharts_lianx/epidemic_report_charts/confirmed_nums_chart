@@ -1,0 +1,87 @@
+"""
+演示可视化需求，折线图开发，主题：疫情变化情况
+"""
+
+import json
+from pyecharts.charts import Line
+from pyecharts.options import TitleOpts, LabelOpts, LegendOpts
+
+# 处理数据
+usa_info = open("D:\PythonProject\可视化案例数据\折线图数据\美国.txt", "r", encoding="UTF-8")
+usa_data = usa_info.read()  # 美国.txt中的数据
+
+jp_info = open("D:\PythonProject\可视化案例数据\折线图数据\日本.txt", "r", encoding="UTF-8")
+jp_data = jp_info.read()  # 日本.txt中的数据
+
+id_info = open("D:\PythonProject\可视化案例数据\折线图数据\印度.txt", "r", encoding="UTF-8")
+id_data = id_info.read()  # 印度.txt中的数据
+
+# 去掉与 JSON 格式不符的开头
+usa_data = usa_data.replace("jsonp_1629344292311_69436(", "")
+jp_data = jp_data.replace("jsonp_1629350871167_29498(", "")
+id_data = id_data.replace("jsonp_1629350745930_63180(", "")
+
+# 去掉与 JSON 格式不符的结尾
+usa_data = usa_data[: -2]
+jp_data = jp_data [: -2]
+id_data = id_data[: -2]
+
+# 通过 json 包将 JSON 格式转换为 dict 格式
+usa_dict = json.loads(usa_data)
+jp_dict = json.loads(jp_data)
+id_dict = json.loads(id_data)
+
+# 获取 trend key
+usa_trend = usa_dict["data"][0]["trend"]
+jp_trend = jp_dict["data"][0]["trend"]
+id_trend = id_dict["data"][0]["trend"]
+
+# 获取日期数据，用于 X 轴，取 2020年（到 314 下标结束）
+usa_x_date = usa_trend["updateDate"][: 314]  # X 轴是公用的，使用一个国家的数据即可
+
+# 获取确认人数数据，用于 Y 轴，取取 2020年（到 314 下标结束）
+usa_y_date = usa_trend["list"][0]["data"][: 314]  # 美国的 Y 轴数据
+jp_y_date = jp_trend["list"][0]["data"][: 314]  # 日本的 Y 轴数据
+id_y_date = id_trend["list"][0]["data"][: 314]  # 印度的 Y 轴数据
+
+# 生成图表，折线图即可
+confirmed_nums_linechart = Line()
+
+# 添加 X 轴数据
+confirmed_nums_linechart.add_xaxis(usa_x_date)
+
+# 添加 Y 轴数据
+confirmed_nums_linechart.add_yaxis(
+    "美国确诊人数", usa_y_date,
+    label_opts=LabelOpts(is_show=False)
+)  # 添加美国的 Y 轴数据，不显示标签
+
+confirmed_nums_linechart.add_yaxis(
+    "日本确诊人数", jp_y_date,
+    label_opts=LabelOpts(is_show=False)
+)  # 添加日本的 Y 轴数据，不显示标签
+
+confirmed_nums_linechart.add_yaxis(
+    "印度确诊人数", id_y_date,
+    label_opts=LabelOpts(is_show=False)
+)  # 添加印度的 Y 轴数据，不显示标签
+
+# 设置全局变量
+confirmed_nums_linechart.set_global_opts(
+    title_opts=TitleOpts(
+        title="2020年美日印确诊人数对比折线图",
+        pos_left="center",
+        pos_bottom="1%"
+    ),  # 配置标题
+    legend_opts=LegendOpts(
+        is_show=True
+    )  # 配置图例
+)
+
+# 调用 render 方法
+confirmed_nums_linechart.render()
+
+# 关闭文件
+usa_info.close()
+jp_info.close()
+id_info.close()
