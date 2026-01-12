@@ -1,1 +1,23 @@
+"""
+基础柱状图
+"""
+
+from pyecharts.charts import Bar
+from pyecharts.options import LabelOpts
+
+# 使用 Bar 构建基础柱状图
+bar = Bar()
+
+# 添加 X 轴和 Y 轴数据
+bar.add_xaxis(["中国", "美国", "日本"])
+bar.add_yaxis(
+    "GDP", [30, 20, 10],
+    label_opts=LabelOpts(position="right")
+)
+
+# 反转 X 轴和 Y 轴
+bar = bar.reversal_axis()
+
+# 调用 render 方法进行绘图
+bar.render()
 
