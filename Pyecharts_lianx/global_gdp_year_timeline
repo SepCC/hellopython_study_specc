@@ -1,0 +1,87 @@
+"""
+演示图表：GDP动态柱状图开发
+"""
+
+from pyecharts.charts import Timeline, Bar
+from pyecharts.options import LabelOpts, InitOpts, TitleOpts
+from pyecharts.globals import ThemeType
+
+# 读取数据
+file_data = open(r"D:\PythonProject\可视化案例数据\动态柱状图数据\1960-2019全球GDP数据.csv", "r", encoding= "GB2312")
+file_data_list = file_data.readlines()
+
+# 关闭文件
+file_data.close()
+
+# 删除第一条数据
+file_data_list.pop(0)
+
+# 将数据转换为字典存储，格式为{"年份": ["国家", GDP值]}
+file_data_dict = {}
+for line in file_data_list:
+    line = line.strip()  # 去掉换行/空格
+    if not line:  # 去掉空行
+        continue
+    # 提取年份、国家、GDP数据
+    parts = line.split(",")
+    years = int(parts[0])
+    countries = parts[1]
+    gdp = float(parts[2]) / 100000000  # 科学计数法格式转换成数字，以亿为单位
+    # 按年份存储数据
+    try:
+        file_data_dict[years].append([countries, gdp])
+    except KeyError:
+        file_data_dict[years] = []
+
+# 排序年份
+years_key = file_data_dict.keys()
+sorted_years_key = sorted(years_key)
+
+# 创建时间线对象
+# years_line = Timeline({"theme": ThemeType.LIGHT})
+years_line = Timeline(init_opts=InitOpts(theme = ThemeType.LIGHT))
+
+# for 循环每一年的数据，基于每一年的数据，创建每一年的 Bar 对象，取 GDP 前八的国家
+for year in sorted_years_key:
+    file_data_dict[year].sort(key = lambda element: element[1], reverse = True)
+    # year_data = sorted(file_data_dict[year], key=lambda x: x[1], reverse=True)[:8]
+    year_top_data = file_data_dict[year][0:8]
+    # 提取国家名和GDP值
+    # x_country_names = [item[0] for item in year_data]
+    # y_gdp_values = [item[1] for item in year_data]
+    x_country_names = list()
+    y_gdp_values = list()
+    for country_gdp in year_top_data:
+        x_country_names.append(country_gdp[0])
+        y_gdp_values.append(country_gdp[1])
+    # 创建 Bar 对象，并反转 X 轴和 Y 轴的数据，让最高的数据在上面
+    year_gdp_bar = Bar()
+    x_country_names.reverse()
+    y_gdp_values.reverse()
+    # 添加 X 轴和 Y 轴数据
+    year_gdp_bar.add_xaxis(x_country_names)
+    year_gdp_bar.add_yaxis(
+        "GDP(亿)",
+        y_gdp_values,
+        label_opts = LabelOpts(position = "right")
+    )
+    # X 轴和 Y 轴数据调换
+    year_gdp_bar.reversal_axis()
+    # 设置每一年的标题
+    year_gdp_bar.set_global_opts(
+        title_opts=TitleOpts(title = f"{year}年全球GDP前8的国家")
+    )
+
+    years_line.add(year_gdp_bar, str(year))
+
+# 设置时间线自动播放
+years_line.add_schema(
+    play_interval = 1000,  # 间隔时间 1000 毫秒
+    is_auto_play = True,  # 设置自动播放
+    is_timeline_show = True,  # 显示时间线
+    is_loop_play = True  # 设置循环播放
+)
+
+# 调用 render 方法进行绘图
+years_line.render("1960-2019全球GDP动态柱状图.html")
+print("图表已生成：1960-2019全球GDP动态柱状图.html")
