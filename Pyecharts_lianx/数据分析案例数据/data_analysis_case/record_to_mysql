@@ -1,0 +1,47 @@
+"""
+将2011年1月和2月的数据导入到 MySQL 数据库中
+"""
+
+from data_define import Record
+from file_define import TextFileReader, JsonFileReader
+from pymysql import Connection
+
+# Text 、 Json 文件数据的读取
+text_data = TextFileReader(r"D:\PythonProject\数据分析案例数据\2011年1月销售数据.txt")
+jan_data: list[Record] = text_data.data_read()
+
+json_data = JsonFileReader(r"D:\PythonProject\数据分析案例数据\2011年2月销售数据JSON.txt")
+feb_data: list[Record] = json_data.data_read()
+
+all_data: list[Record] = jan_data + feb_data
+
+# 获取到 MySQL 数据库的链接对象
+conn = Connection(
+    host = "*.*.*.*",
+    port = 3306,
+    user = "***",
+    passwd = "***"
+)
+
+# 获取游标对象
+cursor = conn.cursor()
+
+# 选择数据库
+conn.select_db("test")
+
+# 创建表结构，用于数据的存放
+cursor.execute("CREATE TABLE Sales(order_date date, order_id varchar(255), money int, province varchar(15));")
+
+# 编写 insert 语句
+for item in all_data:
+    insert_sql = (f"INSERT INTO Sales(order_date, order_id, money, province) " \
+                  f"VALUES('{item.date}', '{item.order_id}', '{item.money}', '{item.province}');")
+
+    # 执行 insert 语句
+    cursor.execute(insert_sql)
+
+# COMMIT 提交事物
+conn.commit()
+
+# 关闭 MySQL 数据库链接对象
+conn.close()
