@@ -1,0 +1,120 @@
+import pandas as pd
+import os
+from pathlib import Path
+
+
+def process_excel_files(root_folder):
+    """
+    处理指定根目录下的所有Excel文件，筛选"是否代偿"列为"已代偿"的数据并合并
+
+    Parameters:
+    root_folder (str): 根文件夹路径（"2025年"文件夹的路径）
+    """
+
+    # 存储所有筛选后的数据
+    all_filtered_data = []
+
+    # 将根文件夹路径转换为Path对象
+    root_path = Path(root_folder)
+
+    # 需要处理的月份文件夹
+    month_folders = ["1月", "2月", "3月"]
+
+    # 遍历每个月份文件夹
+    for month in month_folders:
+        month_path = root_path / month
+
+        # 检查月份文件夹是否存在
+        if not month_path.exists():
+            print(f"警告：文件夹 {month_path} 不存在，跳过")
+            continue
+
+        print(f"正在处理 {month} 文件夹...")
+
+        # 遍历月份文件夹下所有以"报表"结尾的Excel文件
+        # 修正：使用 "*报表.xlsx" 模式匹配
+        for excel_file in month_path.glob("*报表.xlsx"):
+            try:
+                print(f"  正在处理文件: {excel_file.name}")
+
+                # 读取Excel文件的指定Sheet
+                df = pd.read_excel(
+                    excel_file,
+                    sheet_name="数据源-还款明细报表",
+                    dtype=str  # 将所有数据读取为字符串类型，避免数据类型问题
+                )
+
+                # 检查"是否代偿"列是否存在
+                if "是否代偿" not in df.columns:
+                    print(f"    警告：文件 {excel_file.name} 中没有'是否代偿'列，跳过")
+                    continue
+
+                # 筛选"是否代偿"列为"已代偿"的数据
+                filtered_df = df[df["是否代偿"] == "已代偿"]
+
+                # 如果有筛选出的数据，添加到列表中
+                if not filtered_df.empty:
+                    # 添加文件来源信息（可选）
+                    filtered_df = filtered_df.copy()
+                    filtered_df['数据来源'] = f"{month}/{excel_file.name}"
+                    all_filtered_data.append(filtered_df)
+                    print(f"    从该文件中筛选出 {len(filtered_df)} 条'已代偿'数据")
+                else:
+                    print(f"    该文件中没有'已代偿'数据")
+
+            except Exception as e:
+                print(f"    处理文件 {excel_file.name} 时出错: {str(e)}")
+                continue
+
+    # 合并所有筛选后的数据
+    if all_filtered_data:
+        combined_df = pd.concat(all_filtered_data, ignore_index=True)
+
+        # 生成输出文件名（包含当前日期时间）
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"已代偿数据合并_{current_time}.xlsx"
+        output_path = root_path / output_filename
+
+        # 保存到新的Excel文件
+        combined_df.to_excel(output_path, index=False, sheet_name="已代偿数据")
+
+        print(f"\n处理完成！")
+        print(f"总共处理了 {len(all_filtered_data)} 个包含'已代偿'数据的文件")
+        print(f"合并后的数据共有 {len(combined_df)} 条记录")
+        print(f"结果已保存到: {output_path}")
+
+        # 显示部分数据统计（可选）
+        print("\n数据统计：")
+        print(f"总记录数: {len(combined_df)}")
+        print(f"数据列: {list(combined_df.columns)}")
+
+    else:
+        print("\n没有找到符合条件的'已代偿'数据")
+
+
+def main():
+    """
+    主函数：设置根文件夹路径并执行处理
+    """
+    # 请修改为您的实际文件夹路径
+    root_folder = r"C:\你的路径\2025年"  # 请修改为实际的文件夹路径
+
+    # 检查根文件夹是否存在
+    if not os.path.exists(root_folder):
+        print(f"错误：文件夹 {root_folder} 不存在")
+        print("请修改 root_folder 变量为正确的路径")
+        return
+
+    print(f"开始处理文件夹: {root_folder}")
+    print("-" * 50)
+
+    # 执行处理
+    process_excel_files(root_folder)
+
+
+if __name__ == "__main__":
+    # 安装所需库（如果还没有安装的话）
+    # pip install pandas openpyxl
+
+    main()
