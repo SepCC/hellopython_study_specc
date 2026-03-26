@@ -1,0 +1,198 @@
+import os
+import glob
+from datetime import date
+import openpyxl
+from io import BytesIO
+
+def clear_sheet_except_header(sheet):
+    """清除sheet中除第一行外的所有行"""
+    if sheet.max_row > 1:
+        sheet.delete_rows(2, sheet.max_row - 1)
+
+def data_load_scr_to_tpl(src_sheet, tpl_sheet):
+    for row in src_sheet.iter_rows(min_row = 2, values_only = True):
+        tpl_sheet.append(row)
+
+def copy_workbook_with_format(src_wb):
+    """创建模板工作簿的副本（保留样式和格式）"""
+    # 使用临时文件保存并重新加载
+    temp_buffer = BytesIO()
+    src_wb.save(temp_buffer)
+    temp_buffer.seek(0)
+    new_wb = openpyxl.load_workbook(temp_buffer)
+    temp_buffer.close()
+
+    return new_wb
+
+def daily_report_data_update(
+    year: int,
+    month: int,
+    base_folder: str,
+    template_file: str,
+    source_filename_pattern: str,
+    output_filename_pattern: str,
+    start_day: int,
+    end_day: int
+):
+    """
+    以月为单位，按照日报模板文件，根据日期生成日常报表，并保存至对应日期文件夹下。
+
+    :param year: 年份
+    :param month: 月份
+    :param base_folder: 存放日报文件的文件夹的根目录
+    :param template_file: 模板文件的绝对路径
+    :param source_filename_pattern: 数据源文件的统一格式(支持 glob 通配符)
+    :param output_filename_pattern: 输出文件名，可以用 {year} 、 {month} 和 {day} 占位符
+    :param start_day: 起始日(含)
+    :param end_day: 结束日(含)
+    :return:
+    """
+
+
+    # 构建月份文件夹
+    month_folder = os.path.join(base_folder, f"{year}年", f"{month}月")
+
+    # 检查模板文件是否存在
+    if not os.path.exists(template_file):
+        print(f"错误：模板文件 '{template_file}' 未找到，请确保它在当前目录下。")
+        return
+
+    # 加载模板文件，只用于读取
+    try:
+        master_tpl_wb = openpyxl.load_workbook(template_file)
+    except Exception as e:
+        print(f"无法加载模板文件：{e}")
+        return
+
+    # 验证模板 Sheet 完整性
+    required_tpl_sheets = [
+      "sheet1_name",
+      "sheet2_name",
+      "sheet3_name",
+      "sheet4_name"
+    ]
+
+    missing_tpl_sheets = [sht_name for sht_name in required_tpl_sheets if sht_name not in master_tpl_wb.sheetnames]
+
+    if missing_tpl_sheets:
+        print(f"模板文件缺少 Sheet：{missing_tpl_sheets}")
+        master_tpl_wb.close()
+        return
+
+    # 循环处理所需日期的数据
+    for day in range(start_day, end_day + 1):
+        day_folder = os.path.join(month_folder, f"{day}日")
+        if not os.path.isdir(day_folder):
+            print(f"警告：文件夹 '{day_folder}' 不存在，跳过。")
+            continue
+
+        # 查找该日文件夹下的数据源文件，应具有统一格式
+        excel_files = glob.glob(os.path.join(day_folder, source_filename_pattern))
+        if not excel_files:
+            print(f"警告：在 '{day_folder}' 中未找到 '{source_filename_pattern}' 的Excel文件，跳过。")
+            continue
+
+        source_file = excel_files[0]  # 取第一个
+        print(f"\n{"=" * 50}")
+        print(f"正在处理：{day_folder}")
+        print(f"源文件：{os.path.basename(source_file)}")
+
+        # 加载数据源工作簿（只读数据，不读取公式）
+        try:
+            src_wb = openpyxl.load_workbook(source_file, data_only=True)
+        except Exception as e:
+            print(f"  无法打开源文件 {source_file}：{e}，跳过。")
+            continue
+
+        # 检查所需的数据源Sheet是否存在
+        required_src_sheets = [
+            "sheet1_name",
+            "sheet2_name",
+            "sheet3_name",
+            "sheet4_name"
+        ]
+        missing_src_sheets = [
+            sht_name for sht_name in required_src_sheets if sht_name not in src_wb.sheetnames
+        ]
+
+        if missing_src_sheets:
+            print(f"  源文件中缺少所需的Sheet（{missing_src_sheets}），跳过。")
+            src_wb.close()
+            continue
+
+        # 基于主模板文件创建新的工作簿副本
+        print(f"    正在创建模板副本......")
+        tpl_wb = copy_workbook_with_format(master_tpl_wb)
+
+        # 清空模板文件中数据源 Sheet 中除表头外的数据，同时插入数据源文件数据，并更新每张 Sheet 表 A4 单元格的日期
+        print(f"    正在更新数据源 Sheet ......")
+
+
+        tpl_src_sheets = ["数据源_放款表", "数据源_结清表", "数据源_还款表", "数据源_逾期表"]
+        for idx, sht_name in enumerate(tpl_src_sheets):
+            # 清空模板数据源 Sheet，保留表头
+            clear_sheet_except_header(tpl_wb[sht_name])
+
+            # 写入数据源数据
+            data_load_scr_to_tpl(src_wb[required_src_sheets[idx]], tpl_wb[sht_name])
+
+            print(f"    工作表{sht_name} 已更新数据！")
+
+        # ---------- 更新数据汇总 Sheet 表 A4 单元格日期为当日日期 ----------
+        target_date = date(year, month, day)
+
+        tpl_summary_sheets = [
+            "sheet1_name",
+            "sheet2_name",
+            "sheet3_name",
+            "sheet4_name"
+        ]
+        for sheet_name in tpl_summary_sheets:
+            tpl_wb[sheet_name]["A4"] = target_date
+
+        print(f"    数据汇总 Sheet 工作表 'A4' 单元格日期已更新为：{target_date}")
+
+        # ---------- 保存到当日文件夹下 ----------
+        save_filename = output_filename_pattern.format(year = year, month = month, day = day)
+        save_path = os.path.join(day_folder, save_filename)
+
+        try:
+            tpl_wb.save(save_path)
+            print(f"    已保存：{os.path.basename(save_path)}")
+        except Exception as e:
+            print(f"    保存失败：{e}")
+
+        # 关闭数据源工作簿（释放资源）
+        src_wb.close()
+
+    print(f"\n{"=" * 50}")
+
+    # 关闭模板工作簿
+    master_tpl_wb.close()
+
+    print("所有日期处理完成。")
+
+# ========================= 配置脚本参数，并运行脚本 =============================
+if __name__ == "__main__":
+    # ===========================================
+    # 配置参数
+    YEAR = 2026
+    MONTH = 3
+    BASE_FOLDER = r"C:\Users\Desktop\每日报表"
+    TEMPLATE_FILE = r"C:\Users\Desktop\每日报表\2026年\3月\22日\资产管理2026年3月22日报表_总表.xlsx"
+    SOURCE_FILENAME_PATTERN = "*总表.xlsx"
+    OUTPUT_FILENAME_PATTERN = "资产管理{year}年{month}月{day}日报表.xlsx"
+    START_DAY = 1
+    END_DAY = 5
+
+    # 运行脚本
+    daily_report_data_update(
+        YEAR,
+        MONTH,
+        BASE_FOLDER,
+        TEMPLATE_FILE,
+        SOURCE_FILENAME_PATTERN,
+        OUTPUT_FILENAME_PATTERN,
+        START_DAY,
+        END_DAY
+    )
