@@ -1,0 +1,163 @@
+import pandas as pd
+import xlwings as xw
+from pathlib import Path
+from datetime import datetime
+
+
+def summary_data_for_month(
+    year: int,
+    month: int,
+    root_path: str,
+    source_filename_pattern: str,
+    output_file: str,
+    start_day: int,
+    end_day: int
+):
+    """
+    以月为单位，按日汇总日报数据，并生成月度数据汇总文件，保存至对应文件夹下，
+
+    :param year: 年份
+    :param month: 月份
+    :param root_path: 存放数据文件的根目录
+    :param source_filename_pattern: 数据源文件的统一格式，可以用 {year} 、 {month} 和 {day} 占位符
+    :param output_file: 输出文件的文件路径和文件名，可以用 {year} 和 {month} 占位符
+    :param start_day: 起始日期(含)
+    :param end_day: 结束日期(含)
+    :return:
+    """
+
+    # 构建月份文件夹
+    root_path = Path(root_path)
+    month_folder = root_path / f"{year}年" / f"{month}月"
+
+    # 检查月份文件夹是否存在
+    if not month_folder.exists():
+        print(f"错误：月份文件夹 '{month_folder}' 不存在。结束程序！")
+        return
+
+    # 每日报表文件中的 Sheet 表名称列表
+    sht_names = [
+        "sheet1_name",
+        "sheet2_name",
+        "sheet3_name",
+        "sheet4_name"
+    ]
+
+    # 存储日数据的列表，以字典形式初始化
+    sht_data_dict = {name: [] for name in sht_names}
+
+    # 启动 Excel 程序
+    print("\n" + "=" * 50)
+    print(f"启动 Excel 应用程序")
+
+    app = xw.App(
+        visible = False,
+        add_book = False
+    )
+
+    # 处理每日数据
+    try:
+        for day in range(start_day, end_day + 1):
+            print("\n" + "=" * 50)
+            print(f"    开始处理 {month}月月度报表数据......")
+
+            # 根据模板构建文件名
+            day_folder = month_folder / f"{day}日"
+            excel_file = day_folder / source_filename_pattern.format(year = year, month = month, day = day)
+            if not excel_file.exists():
+                print(f"    警告：文件不存在 —— {excel_file}")
+                continue
+            print(f"    打开文件： {excel_file.name}")
+
+            # 获取报表文件中各 Sheet 工作表的数据，并在第一列新增 "统计日期"
+            day_date = datetime(year, month, day)
+
+            wb = None
+
+            try:
+                # 打开工作簿
+                wb = app.books.open(excel_file)
+                day_sheets = 0
+
+                for sht_name in sht_names:
+                    print(f"        准备读取工作表： {sht_name}")
+
+                    try:
+                        sht_data = wb.sheets[sht_name]
+
+                        # 获取数据区域，设置起始单元格为 C5，含表头
+                        required_data = sht_data.range("C5").expand("table").value
+                        if not required_data:
+                            print(f"        警告：工作表 {sht_name} 在 {excel_file.name} 中无数据，跳过。")
+                            continue
+
+                        # 构建 DataFrame：第一行为列名，其余为数据
+                        df = pd.DataFrame(required_data[1: ], columns = required_data[0])
+                        df.insert(0, "统计日期", day_date)
+                        sht_data_dict[sht_name].append(df)
+
+                        day_sheets += 1
+                        print(f"        成功读取工作表 {sht_name}")
+
+                    except Exception as e:
+                        print(f"        读取文件 {excel_file} 的 {sht_name} 工作表时出错：{e} ")
+
+                print(f"        本日数据读取完成，成功读取 {day_sheets} 个工作表！")
+
+            except Exception as e:
+                print(f"    无法打开工作簿 {excel_file} ：{e}")
+                continue
+
+            finally:
+                if wb:
+                    wb.close()
+                print(f"    关闭工作簿： {excel_file.name}")
+
+        print("\n" + "=" * 50)
+        print("所有日期的文件处理完成")
+
+    finally:
+        app.quit()
+        print(f"    Excel 应用程序已退出")
+
+    # 构建输出文件路径并创建目录
+    output_file = Path(output_file.format(year = year, month = month))
+    output_file.parent.mkdir(parents = True, exist_ok = True)
+
+    print("\n" + "=" * 50)
+    print(f"开始汇总数据......")
+
+    # 拼接每日 Sheet 数据，并写入汇总 Excel 文件
+    with pd.ExcelWriter(output_file, engine = "openpyxl") as writer:
+        for sht_name, sht_data_list in sht_data_dict.items():
+            if sht_data_list:
+                final_df = pd.concat(sht_data_list, ignore_index = True, join = "outer")
+                final_df.to_excel(writer, sheet_name = sht_name, index = False)
+            else:
+                print(f"警告：{sht_name} 无数据，跳过。")
+
+    print("\n" + "=" * 50)
+    print(f"数据汇总完成，文件保存至：{output_file}")
+
+# ======================== 配置脚本参数，并运行脚本 ===============================
+if __name__ == "__main__":
+    # ===============
+    # 配置参数
+    YEAR = 2026
+    MONTH = 3
+    ROOT_PATH = r"C:\Users\Desktop\每日报表"
+    SOURCE_FILENAME_PATTERN = "资产管理{year}年{month}月{day}日报表.xlsx"
+    OUTPUT_FILE = r"C:\Users\Desktop\每日报表\数据汇总\{year}年{month}月报表数据汇总.xlsx"
+    START_DAY = 1
+    END_DAY = 20
+
+    # 运行脚本
+    summary_data_for_month(
+        YEAR,
+        MONTH,
+        ROOT_PATH,
+        SOURCE_FILENAME_PATTERN,
+        OUTPUT_FILE,
+        START_DAY,
+        END_DAY
+    )
