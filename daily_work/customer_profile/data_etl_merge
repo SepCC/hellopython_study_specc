@@ -1,0 +1,455 @@
+import pandas as pd
+import numpy as np
+import logging
+import traceback
+from typing import Tuple, Optional
+
+# ================= 日志配置 =================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+
+# ================= 常量定义 =================
+# 文件路径
+LOAN_FILE_PATH = r"放款表总表_20260331.xlsx"
+SETTLED_FILE_PATH = r"结清表总表_20260331.xlsx"
+REPAY_FILE_PATH = r"还款表总表_20260331.xlsx"
+MAPPING_FILE_PATH = r"数据标签映射表.xlsx"
+OUTPUT_FILE_PATH = r"客户画像数据明细表_20260331.xlsx"
+
+# 放款表所需列
+LOAN_COLUMNS = [
+    "网点",
+    "承租人身份证号",
+    "合同号",
+    "评估价",
+    "附加额度",
+    "产品档位",
+    "融租合同收益率",
+    "承租期数",
+    "融租合同金额",
+    "融资日期"
+]
+
+# 结清表所需列
+SETTLED_COLUMNS = [
+    "合同编号",
+    "合同开始日期",
+    "融租合同金额",
+    "已付期数",
+    "月还租本金合计",
+    "回购类型"
+]
+
+# 还款表所需列
+REPAY_COLUMNS = [
+    "合同编号",
+    "应还日期",
+    "剩余租赁本金"
+]
+
+# 年龄分箱配置
+AGE_BINS = [17, 25, 35, 45, 55, np.inf]
+AGE_LABELS = [
+    "25岁(含)以下",
+    "25岁(不含)-35岁(含)",
+    "35岁(不含)-45岁(含)",
+    "45岁(不含)-55岁(含)",
+    "55岁(不含)以上"
+]
+
+# 合同金额分箱配置
+AMOUNT_BINS = [0, 50000, 100000, 200000, 300000, 500000, np.inf]
+AMOUNT_LABELS = [
+    "5万元(含)以下",
+    "5万元(不含)-10万元(含)",
+    "10万元(不含)-20万元(含)",
+    "20万元(不含)-30万元(含)",
+    "30万元(不含)-50万元(含)",
+    "50万元(不含)以上"
+]
+
+# 放款成数分箱配置
+LOAN_PCT_BINS = [0, 0.25, 0.50, 0.75, 0.90, np.inf]
+LOAN_PCT_LABELS = [
+    "25%(含)以下",
+    "25%(不含)-50%(含)",
+    "50%(不含)-75%(含)",
+    "75%(不含)-90%(含)",
+    "90%(不含)以上"
+]
+
+# 提前结清金额占比分箱配置
+ADVANCE_SETTLED_BINS = [-np.inf, 0.2, 0.4, 0.6, 0.8, 1.0]
+ADVANCE_SETTLED_LABELS = [
+    "20%(含)以下",
+    "20%(不含)-40%(含)",
+    "40%(不含)-60%(含)",
+    "60%(不含)-80%(含)",
+    "80%(不含)以上"
+]
+
+
+# ================= 辅助函数 =================
+def load_mapping_dict(
+        file_path: str,
+        sheet_name: str,
+        key_col: str,
+        value_col: str,
+) -> dict:
+    """加载映射表并返回字典，若失败返回空字典并记录错误"""
+    try:
+        logger.info(f"加载映射表： {sheet_name}")
+        df = pd.read_excel(file_path, sheet_name=sheet_name, header=0)
+        result = dict(zip(df[key_col], df[value_col]))
+        logger.info(f"  成功加载 {len(result)} 条映射")
+        return result
+    except Exception as e:
+        logger.error(f"加载映射表 {sheet_name} 失败： {e}\n{traceback.format_exc()}")
+        return {}
+
+
+def load_region_mapping(file_path: str) -> dict:
+    return load_mapping_dict(file_path, "网点_大区映射表", "网点名称", "大区名称")
+
+
+def load_addr_mapping(file_path: str) -> dict:
+    try:
+        logger.info(f"加载网点 -> 省市区域映射表")
+        df = pd.read_excel(file_path, sheet_name="网点_省市区域映射表",header=0)
+        result = {row["网点名称"]: (row["省份区域"], row["市级区域"]) for _, row in df.iterrows()}
+        logger.info(f"  成功加载 {len(result)} 条映射")
+        return result
+    except Exception as e:
+        logger.error(f"加载区域映射表失败： {e}\n{traceback.format_exc()}")
+        return {}
+
+
+def load_product_mapping(file_path: str) -> dict:
+    return load_mapping_dict(file_path, "产品映射表", "产品分类", "产品类型")
+
+
+def load_buyback_mapping(file_path: str) -> dict:
+    return load_mapping_dict(file_path, "回购类型映射表", "回购类型", "结清类型")
+
+
+def parse_id_card(id_card: str) -> Tuple[Optional[pd.Timestamp], str]:
+    """
+    解析身份证号，返回(出生日期、性别)
+    :param id_card: 15位和18位身份证号
+    :return: 出生日期、性别
+    """
+    if pd.isna(id_card) or len(id_card) not in (15, 18):
+        logger.warning(f"无效身份证号长度： {id_card if not pd.isna(id_card) else 'NaN'}")
+        return None, "未知"
+
+    if len(id_card) == 18:
+        birth_str = id_card[6: 14]
+        gender_code = id_card[16]
+    else:  # 15位
+        birth_str = "19" + id_card[6: 12]
+        gender_code = id_card[14]
+
+    # 解析出生日期
+    try:
+        birth_date = pd.to_datetime(birth_str, format="%Y%m%d", errors="coerce")
+        if pd.isna(birth_date):
+            logger.warning(f"出生日期解析失败： {birth_str}")
+    except Exception:
+        birth_date = None
+        logger.warning(f"出生日期解析异常： {birth_str}")
+
+    # 解析性别
+    if gender_code.isdigit():
+        gender = "男" if int(gender_code) % 2 == 1 else "女"
+    else:
+        gender = "未知"
+        logger.warning(f"性别码非数字： {gender_code}")
+
+    return birth_date, gender
+
+
+def calculate_age(birth_date: pd.Series, loan_date: pd.Series):
+    """基于出生日期和融资日期计算年龄(整数)"""
+    return (
+        (loan_date.dt.year - birth_date.dt.year)
+        - (
+            (loan_date.dt.month < birth_date.dt.month)
+            | (
+                (loan_date.dt.month == birth_date.dt.month)
+                & (loan_date.dt.day < birth_date.dt.day)
+            )
+        ).astype(int)
+    )
+
+
+def add_age_group(df: pd.DataFrame, age_col: str, new_col: str) -> pd.DataFrame:
+    df[new_col] = pd.cut(
+        df[age_col],
+        bins=AGE_BINS,
+        labels=AGE_LABELS,
+        include_lowest=False
+    )
+    return df
+
+
+def add_amount_group(df: pd.DataFrame, amount_col: str, new_col: str) -> pd.DataFrame:
+    df[new_col] = pd.cut(
+        df[amount_col],
+        bins=AMOUNT_BINS,
+        labels=AMOUNT_LABELS,
+        include_lowest=False
+    )
+    return df
+
+
+def add_loan_pct_group(df: pd.DataFrame, loan_col: str, new_col: str) -> pd.DataFrame:
+    df[new_col] = pd.cut(
+        df[loan_col],
+        bins=LOAN_PCT_BINS,
+        labels=LOAN_PCT_LABELS,
+        include_lowest=False
+    )
+    return df
+
+
+def add_advance_settled_group(df: pd.DataFrame, advance_settled_col: str, new_col: str) -> pd.DataFrame:
+    df[new_col] = pd.cut(
+        df[advance_settled_col],
+        bins=ADVANCE_SETTLED_BINS,
+        labels=ADVANCE_SETTLED_LABELS,
+        include_lowest=False
+    )
+    return df
+
+
+# ================= 各表处理函数 =================
+def process_loan_table(df: pd.DataFrame, mapping_dict: dict) -> pd.DataFrame:
+    """
+    清洗放款表数据
+    :param df: 放款表，DataFrame
+    :param mapping_dict: 枚举值映射字典
+    :return: 放款表_已清洗，DataFrame
+    """
+
+    logger.info(f"开始处理放款表，原始数据形状：s%", df.shape)
+    try:
+        # 剔除异常数据
+        before_rows = len(df)
+        df = df[df["产品"] != ""] # 不参与统计的产品
+        df = df[df["网点"] != "总部"]
+        after_rows = len(df)
+        logger.info(f"  剔除异常数据：产品“”，网点“总部”，共移除 {before_rows - after_rows} 行，"
+                    f"剩余 {after_rows - before_rows} 行")
+
+        # 选取列并处理缺失值
+        df = df[:, LOAN_COLUMNS].copy()
+        df["附加额度"] = df["附加额度"].fillna(0)
+        before_drop = len(df)
+        df = df.dropna(subset=LOAN_COLUMNS)
+        after_drop = len(df)
+        if before_drop > after_drop:
+            logger.info(f"  删除放款表含空值的行： {before_drop - after_drop} 行")
+
+        # 新增大区
+        region_map = mapping_dict["region_map"]
+        df["大区"] = df["网点"].map(region_map).fillna("未配置映射")
+        missing_region = (df["大区"] == "未配置映射").sum()
+        if missing_region != 0:
+            logger.warning(f"   有 {missing_region} 条数据未匹配到大区，标记为 '未配置映射'")
+
+        # 新增省市区域
+        addr_map = mapping_dict["addr_map"]
+        add_tuples = df["网点"].map(addr_map)
+        df["省份区域"] = add_tuples.str[0].fillna("未配置映射")
+        df["市级区域"] = add_tuples.str[1].fiilna("未配置映射")
+        missing_addr = (df["省份区域"] == "未配置映射").sum()
+        if missing_addr != 0:
+            logger.warning(f"   有 {missing_addr} 条数据未匹配到省市区域，标记为 '未配置映射'")
+
+        # 产品档位映射
+        product_map = mapping_dict["product_map"]
+        df["产品"] = df["产品档位"].map(product_map).fillna("未配置映射")
+        missing_product = (df["产品"] == "未配置映射").sum()
+        if missing_product != 0:
+            logger.warning(f"   有 {missing_product} 条数据未匹配到产品，标记为 '未配置映射'")
+
+        # 身份证处理
+        df["承租人身份证号"] = df["承租人身份证号"].astype(str).str.strip()
+        id_info = df["承租人身份证号"].apply(lambda x: pd.Series(parse_id_card(x)))
+        df["出生日期"] = id_info[0]
+        df["性别"] = id_info[1]
+        missing_birth = df["出生日期"].isna().sum()
+        missing_gender = (df["性别"] == "未知").sum()
+        if missing_birth != 0:
+            logger.warning(f"   有 {missing_birth} 条数据出生日期解析失败")
+        if missing_gender != 0:
+            logger.warning(f"   有 {missing_gender} 条数据性别解析失败")
+        df["年龄"] = calculate_age(df["出生日期"], df["融资日期"])
+        df = add_age_group(df, "年龄", "年龄区间")
+
+        # 合同金额区间
+        df = add_amount_group(df, "融租合同金额", "合同金额区间")
+
+        # 放款成数及其区间
+        df["放款成数"] = np.where(
+            df["评估价"] != 0,
+            (df["融租合同金额"] - df["附加额度"]) / df["评估价"],
+            np.nan
+        )
+        zero_eval = (df["评估价"] == 0).sum()
+        if zero_eval != 0:
+            logger.warning(f"   有 {zero_eval} 条数据的评估价为 0，放款成数设置为 NaN")
+        df = add_loan_pct_group(df, "放款成数", "放款成数区间")
+
+        logger.info(f"放款表处理完成，最终形状： {df.shape}")
+        return df
+    except Exception as e:
+        logger.error(f"放款表处理失败：{e}\n{traceback.format_exc()}")
+        raise  # 抛出，终止
+
+
+def process_settled_table(df: pd.DataFrame, mapping_dict: dict) -> pd.DataFrame:
+    """
+    清洗结清表数据
+    :param df: 结清表，DataFrame
+    :param mapping_dict: 枚举值映射字典
+    :return: 结清表_已清洗，DataFrame
+    """
+
+    logger.info("开始处理结清表，原始数据形状：s%", df.shape)
+    try:
+        df = df.loc[:, SETTLED_COLUMNS].cpoy()
+        before_rows = len(df)
+        df = df.dropna(subset=SETTLED_COLUMNS)
+        after_rows = len(df)
+        if before_rows > after_rows:
+            logger.info(f"  删除结清表含空值的行： {before_rows - after_rows} 行")
+
+        # 结清类型映射
+        buyback_map = mapping_dict["buyback_map"]
+        df["结清类型"] = df["回购类型"].map(buyback_map).fillna("未配置映射")
+        missing_buyback = (df["结清类型"] == "未配置映射").sum()
+        if missing_buyback != 0:
+            logger.warning(f"   有 {missing_buyback} 条数据未匹配到结清类型，标记为 '未配置映射'")
+
+        # 提前结清金额及其占比
+        df["提前结清金额"] = df["融租合同金额"] - df["月还租金合计"]
+        df["提前结清金额占合同金额比"] = df["提前结清金额"] / df["融租合同金额"]
+
+        df = add_advance_settled_group(df, "提前结清金额占合同金额比", "提前结清金额占比区间")
+
+        logger.info(f"结清表处理完成，最终形状： {df.shape}")
+        return df
+    except Exception as e:
+        logger.error(f"结清表处理失败{e}\n{traceback.format_exc()}")
+        raise  # 抛出，终止
+
+
+def process_repay_table(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    清洗还款表数据
+    :param df: 还款表，DataFrame
+    :return: 还款表_已清洗，DataFrame
+    """
+
+    logger.info("开始处理还款表，原始数据形状：s%", df.shape)
+    try:
+        df = df.loc[:, REPAY_COLUMNS].copy()
+        logger.info("还款表处理完成，最终数据形状：s%", df.shape)
+        return df
+    except Exception as e:
+        logger.error(f"还款表处理失败“：{e}\n{traceback.format_exc()}")
+        raise  # 抛出，终止
+
+
+# ================= 主流程 =================
+def main():
+    logger.info("=" * 60)
+    logger.info("开始：客户画像数据清洗与合并任务")
+    try:
+        # 1. 加载原始数据
+        logger.info("步骤1：加载原始 Excel 文件")
+        loan_src = pd.read_excel(LOAN_FILE_PATH, sheet_name="Sheet1")
+        logger.info(f"  放款表加载成功，数据形状: {loan_src.shape}")
+        settled_src = pd.read_excel(SETTLED_FILE_PATH, sheet_name="Sheet1")
+        logger.info(f"  结清表加载成功，数据形状：: {settled_src.shape}")
+        repay_src = pd.read_excel(REPAY_FILE_PATH, sheet_name="Sheet1")
+        logger.info(f"  还款表加载成功，数据形状: {repay_src.shape}")
+
+        # 2. 加载所有映射表
+        logger.info("步骤2：加载映射表")
+        mapping_dict = {
+            "region_map": load_region_mapping(MAPPING_FILE_PATH),
+            "addr_map": load_addr_mapping(MAPPING_FILE_PATH),
+            "product_map": load_product_mapping(MAPPING_FILE_PATH),
+            "buyback_map": load_buyback_mapping(MAPPING_FILE_PATH)
+        }
+
+        # 检查映射表是否为空
+        if not mapping_dict["region_map"]:
+            logger.warning("网点-大区映射表为空，大区列将填充为 '未配置映射'")
+        if not mapping_dict["addr_map"]:
+            logger.warning("网点-省市区域映射表为空，省市区域列将填充为 '未配置映射'")
+        if not mapping_dict["product_map"]:
+            logger.warning("产品映射表为空，产品列将填充为 '未配置映射'")
+        if not mapping_dict["buyback_map"]:
+            logger.warning("回购类型映射表为空，结清类型列将填充为 '未配置映射'")
+
+        # 3. 分别处理各表
+        logger.info("步骤3：数据清洗与特征工程")
+        loan_processed = process_loan_table(loan_src, mapping_dict)
+        settled_processed = process_settled_table(settled_src, mapping_dict)
+        repay_processed = process_repay_table(repay_src)
+
+        # 4. 合并数据
+        logger.info("步骤4：合并放款表、结清表、还款表")
+        # 放款表与结清表左连接
+        merged_df = pd.merge(
+            loan_processed,
+            settled_processed,
+            how="left",
+            left_on="合同号",
+            right_on="合同编号"
+        )
+        if "合同编号" in merged_df.columns:
+            merged_df.drop(columns="合同编号", inplace=True)
+        logger.info(f"  放款表和结清表已合并，数据形状: {merged_df.shape}")
+
+        # 再与还款表左连接
+        merged_df = pd.merge(
+            merged_df,
+            repay_processed,
+            how="left",
+            left_on="合同号",
+            right_on="合同编号"
+        )
+        if "合同编号" in merged_df.columns:
+            merged_df.drop(columns="合同编号", inplace=True)
+        logger.info(f"  已和还款表完成合并，数据形状: {merged_df.shape}")
+
+        # 处理重复列名(放款表和结清表都有'融租合同金额'列)
+        if "融租合同金额_y" in merged_df.columns:
+            merged_df.drop(columns="融租合同金额_y", inplace=True)
+            logger.info("   已删除结清表合并后带来的冗余列： '融租合同金额_y'")
+        if "融租合同金额_x" in merged_df.columns:
+            merged_df.rename(columns={"融租合同金额_x": "融租合同金额"}, inplace=True)
+
+        # 5. 导出数据结果
+        logger.info("步骤5：导出 Excel 文件")
+        with pd.ExcelWriter(OUTPUT_FILE_PATH, engine="openpyxl") as wb:
+            merged_df.to_excel(wb, sheet_name="客户画像数据明细", index=False)
+        logger.info(f"任务完成！结果已保存至：{OUTPUT_FILE_PATH}\n数据结果的数据形状：{merged_df.shape}")
+
+    except Exception as e:
+        logger.error(f"主流程发生严重错误，任务终止：{e}\n{traceback.format_exc()}")
+        raise  # 抛出，终止
+
+
+# ================= 脚本运行 =================
+if __name__ == "__main__":
+    main()
